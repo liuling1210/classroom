@@ -1,0 +1,1123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>实验教室 - Three.js</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #1a1a1a;
+      }
+
+      #viewport {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      #loading {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        background: rgba(26, 26, 26, 0.92);
+        color: #eee;
+        font-family: system-ui, sans-serif;
+        font-size: 15px;
+        z-index: 10;
+        transition: opacity 0.4s;
+      }
+
+      #loading.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      #progressBar {
+        width: 240px;
+        height: 4px;
+        background: #333;
+        border-radius: 2px;
+        overflow: hidden;
+      }
+
+      #progressBar span {
+        display: block;
+        height: 100%;
+        width: 0%;
+        background: #4a9eff;
+        transition: width 0.15s;
+      }
+
+      .lil-gui {
+        --background-color: rgba(22, 24, 28, 0.92);
+        --widget-color: rgba(255, 255, 255, 0.08);
+        --focus-color: rgba(74, 158, 255, 0.45);
+        --number-color: #8ec8ff;
+        --string-color: #c8daf0;
+        font-family: system-ui, sans-serif;
+      }
+
+      .lil-gui.scene-gui {
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        max-height: calc(100vh - 24px);
+        overflow-y: auto;
+        z-index: 20;
+      }
+
+      .lil-gui.material-gui {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        max-height: calc(100vh - 24px);
+        overflow-y: auto;
+        z-index: 20;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="viewport"></canvas>
+    <input id="modelFileInput" type="file" accept=".glb,.gltf" hidden />
+    <div id="loading">
+      <div id="loadingMessage">正在加载实验教室模型…</div>
+      <div id="progressBar"><span></span></div>
+    </div>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/"
+        }
+      }
+    </script>
+
+    <script type="module">
+      import * as THREE from "three";
+      import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+      import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+      import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
+      import GUI from "three/addons/libs/lil-gui.module.min.js";
+
+      const MODEL_PATH = "./model/实验教室(2).glb";
+      const HDR_PATH = "./hdr/studio_small_08_1k.hdr";
+
+      const INITIAL_CAMERA = {
+        position: { x: 12.108, y: 4.995, z: 27.075 },
+        target: { x: -4.134, y: -2.038, z: 4.252 },
+      };
+
+      const canvas = document.querySelector("#viewport");
+      const loadingEl = document.querySelector("#loading");
+      const loadingMessageEl = document.querySelector("#loadingMessage");
+      const progressSpan = document.querySelector("#progressBar span");
+      const modelFileInput = document.querySelector("#modelFileInput");
+
+      let currentModel = null;
+      let currentModelName = "实验教室(2).glb";
+
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.physicallyCorrectLights = true;
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.5;
+
+      const scene = new THREE.Scene();
+      const fallbackBgColor = new THREE.Color(0xb8c4d0);
+      scene.background = fallbackBgColor.clone();
+      scene.environmentIntensity = 1.0;
+
+      let hdrEnvMap = null;
+
+      const pmremGenerator = new THREE.PMREMGenerator(renderer);
+      pmremGenerator.compileEquirectangularShader();
+
+      function loadHDREnvironment() {
+        return new Promise((resolve, reject) => {
+          new RGBELoader().load(
+            HDR_PATH,
+            (hdrTexture) => {
+              hdrTexture.mapping = THREE.EquirectangularReflectionMapping;
+              const envMap = pmremGenerator.fromEquirectangular(hdrTexture).texture;
+              hdrEnvMap = envMap;
+              scene.environment = envMap;
+              applyBackground();
+              hdrTexture.dispose();
+              pmremGenerator.dispose();
+              resolve(envMap);
+            },
+            undefined,
+            reject
+          );
+        });
+      }
+
+      const camera = new THREE.PerspectiveCamera(
+        50,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        2000
+      );
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+
+      function applyInitialCamera() {
+        camera.position.set(
+          INITIAL_CAMERA.position.x,
+          INITIAL_CAMERA.position.y,
+          INITIAL_CAMERA.position.z
+        );
+        controls.target.set(
+          INITIAL_CAMERA.target.x,
+          INITIAL_CAMERA.target.y,
+          INITIAL_CAMERA.target.z
+        );
+        controls.update();
+      }
+
+      applyInitialCamera();
+
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.15);
+      scene.add(ambientLight);
+
+      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x8d99ae, 0.25);
+      scene.add(hemiLight);
+
+      const dirLight = new THREE.DirectionalLight(0xffffff, 2.5);
+      dirLight.position.set(10, 20, 10);
+      dirLight.castShadow = true;
+      dirLight.shadow.mapSize.set(2048, 2048);
+      dirLight.shadow.camera.near = 0.5;
+      dirLight.shadow.camera.far = 80;
+      dirLight.shadow.camera.left = -30;
+      dirLight.shadow.camera.right = 30;
+      dirLight.shadow.camera.top = 30;
+      dirLight.shadow.camera.bottom = -30;
+      scene.add(dirLight);
+
+      const grid = new THREE.GridHelper(40, 40, 0x888888, 0xcccccc);
+      grid.position.y = 0;
+      scene.add(grid);
+
+      let customLightId = 0;
+      const customLights = [];
+      let customLightsGuiFolder = null;
+      let sceneLightFolder = null;
+
+      const TONE_MAPPING_OPTIONS = {
+        无: THREE.NoToneMapping,
+        Linear: THREE.LinearToneMapping,
+        Reinhard: THREE.ReinhardToneMapping,
+        Cineon: THREE.CineonToneMapping,
+        ACES: THREE.ACESFilmicToneMapping,
+      };
+
+      const settings = {
+        exposure: renderer.toneMappingExposure,
+        toneMapping: "ACES",
+        physicallyCorrectLights: renderer.physicallyCorrectLights,
+        shadows: renderer.shadowMap.enabled,
+        hdrBackground: true,
+        useEnvironment: true,
+        environmentIntensity: scene.environmentIntensity,
+        backgroundColor: "#b8c4d0",
+        ambientIntensity: ambientLight.intensity,
+        hemiIntensity: hemiLight.intensity,
+        hemiGroundColor: "#8d99ae",
+        dirIntensity: dirLight.intensity,
+        dirX: dirLight.position.x,
+        dirY: dirLight.position.y,
+        dirZ: dirLight.position.z,
+        dirCastShadow: dirLight.castShadow,
+        showGrid: true,
+        cameraFov: camera.fov,
+      };
+
+      function applyBackground() {
+        if (settings.hdrBackground && hdrEnvMap) {
+          scene.background = hdrEnvMap;
+        } else {
+          scene.background = fallbackBgColor;
+        }
+      }
+
+      function setupSettingsPanel() {
+        const gui = new GUI({ title: "场景设置", width: 300 });
+        gui.domElement.classList.add("scene-gui");
+
+        const renderFolder = gui.addFolder("渲染");
+        renderFolder
+          .add(settings, "exposure", 0.1, 3, 0.01)
+          .name("曝光")
+          .onChange((v) => {
+            renderer.toneMappingExposure = v;
+          });
+        renderFolder
+          .add(settings, "toneMapping", Object.keys(TONE_MAPPING_OPTIONS))
+          .name("色调映射")
+          .onChange((v) => {
+            renderer.toneMapping = TONE_MAPPING_OPTIONS[v];
+          });
+        renderFolder
+          .add(settings, "physicallyCorrectLights")
+          .name("物理正确光照")
+          .onChange((v) => {
+            renderer.physicallyCorrectLights = v;
+          });
+        renderFolder
+          .add(settings, "shadows")
+          .name("阴影")
+          .onChange((v) => {
+            renderer.shadowMap.enabled = v;
+          });
+        renderFolder.open();
+
+        const envFolder = gui.addFolder("环境与 HDR");
+        envFolder
+          .add(settings, "useEnvironment")
+          .name("启用环境光")
+          .onChange((v) => {
+            scene.environment = v && hdrEnvMap ? hdrEnvMap : null;
+          });
+        envFolder
+          .add(settings, "environmentIntensity", 0, 3, 0.01)
+          .name("环境强度")
+          .onChange((v) => {
+            scene.environmentIntensity = v;
+          });
+        envFolder
+          .add(settings, "hdrBackground")
+          .name("HDR 作为背景")
+          .onChange(() => applyBackground());
+        envFolder
+          .addColor(settings, "backgroundColor")
+          .name("纯色背景")
+          .onChange((v) => {
+            fallbackBgColor.set(v);
+            applyBackground();
+          });
+        envFolder.open();
+
+        const lightFolder = gui.addFolder("灯光");
+        sceneLightFolder = lightFolder;
+
+        const lightActions = {
+          newLightType: "点光源",
+          addLight() {
+            addCustomLight(lightActions.newLightType === "点光源" ? "point" : "spot");
+          },
+        };
+        lightFolder
+          .add(lightActions, "newLightType", ["点光源", "聚光灯"])
+          .name("新增类型");
+        lightFolder.add(lightActions, "addLight").name("添加光源");
+
+        lightFolder
+          .add(settings, "ambientIntensity", 0, 2, 0.01)
+          .name("环境光")
+          .onChange((v) => {
+            ambientLight.intensity = v;
+          });
+        lightFolder
+          .add(settings, "hemiIntensity", 0, 2, 0.01)
+          .name("半球光")
+          .onChange((v) => {
+            hemiLight.intensity = v;
+          });
+        lightFolder.addColor(settings, "hemiGroundColor").name("地面色").onChange((v) => {
+          hemiLight.groundColor.set(v);
+        });
+        lightFolder
+          .add(settings, "dirIntensity", 0, 10, 0.05)
+          .name("平行光")
+          .onChange((v) => {
+            dirLight.intensity = v;
+          });
+        const dirPos = lightFolder.addFolder("平行光位置");
+        dirPos.add(settings, "dirX", -50, 50, 0.5).name("X").onChange(updateDirLightPosition);
+        dirPos.add(settings, "dirY", 0, 50, 0.5).name("Y").onChange(updateDirLightPosition);
+        dirPos.add(settings, "dirZ", -50, 50, 0.5).name("Z").onChange(updateDirLightPosition);
+        lightFolder
+          .add(settings, "dirCastShadow")
+          .name("平行光阴影")
+          .onChange((v) => {
+            dirLight.castShadow = v;
+          });
+        lightFolder.open();
+        rebuildCustomLightsPanel();
+
+        const sceneFolder = gui.addFolder("场景");
+        const modelActions = {
+          currentModelName,
+          uploadModel() {
+            modelFileInput.click();
+          },
+        };
+        const modelNameController = sceneFolder
+          .add(modelActions, "currentModelName")
+          .name("当前模型")
+          .disable();
+        sceneFolder.add(modelActions, "uploadModel").name("上传 GLB 替换");
+        sceneFolder
+          .add(settings, "showGrid")
+          .name("显示网格")
+          .onChange((v) => {
+            grid.visible = v;
+          });
+        sceneFolder
+          .add(settings, "cameraFov", 20, 90, 1)
+          .name("相机 FOV")
+          .onChange((v) => {
+            camera.fov = v;
+            camera.updateProjectionMatrix();
+          });
+        sceneFolder.open();
+
+        window.__updateModelNameDisplay = (name) => {
+          currentModelName = name;
+          modelActions.currentModelName = name;
+          modelNameController.updateDisplay();
+        };
+
+        gui.open();
+      }
+
+      function updateDirLightPosition() {
+        dirLight.position.set(settings.dirX, settings.dirY, settings.dirZ);
+      }
+
+      function configureLightShadow(light) {
+        light.shadow.mapSize.set(1024, 1024);
+        light.shadow.bias = -0.0005;
+        if (light.shadow.camera) {
+          light.shadow.camera.near = 0.5;
+          light.shadow.camera.far = 50;
+        }
+      }
+
+      function createPointLightHelper(light, size = 0.4) {
+        const geo = new THREE.SphereGeometry(size, 10, 10);
+        const mat = new THREE.MeshBasicMaterial({
+          wireframe: true,
+          color: light.color.getHex(),
+          depthTest: false,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        const helper = new THREE.Group();
+        helper.add(mesh);
+        helper.update = () => {
+          helper.position.copy(light.position);
+          mat.color.copy(light.color);
+        };
+        helper.dispose = () => {
+          geo.dispose();
+          mat.dispose();
+        };
+        helper.update();
+        return helper;
+      }
+
+      function createSpotLightHelper(light) {
+        const lineMat = new THREE.LineBasicMaterial({
+          color: light.color.getHex(),
+          depthTest: false,
+        });
+        const lineGeo = new THREE.BufferGeometry();
+        lineGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
+        const line = new THREE.Line(lineGeo, lineMat);
+
+        const coneGeo = new THREE.ConeGeometry(1, 1, 12, 1, true);
+        const coneMat = new THREE.MeshBasicMaterial({
+          wireframe: true,
+          color: light.color.getHex(),
+          depthTest: false,
+        });
+        const cone = new THREE.Mesh(coneGeo, coneMat);
+
+        const helper = new THREE.Group();
+        helper.add(line, cone);
+        helper.update = () => {
+          const pos = light.position;
+          const tgt = light.target.position;
+          const attr = lineGeo.attributes.position;
+          attr.setXYZ(0, pos.x, pos.y, pos.z);
+          attr.setXYZ(1, tgt.x, tgt.y, tgt.z);
+          attr.needsUpdate = true;
+
+          const dir = new THREE.Vector3().subVectors(tgt, pos);
+          const dist = dir.length();
+          if (dist < 1e-4) return;
+          dir.normalize();
+
+          const height = Math.min(dist * 0.35, 6);
+          const radius = Math.max(Math.tan(light.angle) * height, 0.05);
+          cone.position.copy(pos);
+          cone.scale.set(radius, height, radius);
+          cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir);
+
+          lineMat.color.copy(light.color);
+          coneMat.color.copy(light.color);
+        };
+        helper.dispose = () => {
+          lineGeo.dispose();
+          lineMat.dispose();
+          coneGeo.dispose();
+          coneMat.dispose();
+        };
+        helper.update();
+        return helper;
+      }
+
+      function syncCustomLight(entry) {
+        const { light, state, type } = entry;
+        light.color.set(state.color);
+        light.intensity = state.intensity;
+        light.position.set(state.x, state.y, state.z);
+        light.distance = state.distance;
+        light.decay = state.decay;
+        light.castShadow = state.castShadow;
+        if (entry.helper) entry.helper.visible = state.showHelper;
+        if (type === "spot") {
+          light.angle = state.angle;
+          light.penumbra = state.penumbra;
+          light.target.position.set(state.targetX, state.targetY, state.targetZ);
+        }
+      }
+
+      function addCustomLight(type) {
+        customLightId += 1;
+        const label = type === "point" ? `点光源 ${customLightId}` : `聚光灯 ${customLightId}`;
+
+        let light;
+        let state;
+
+        if (type === "point") {
+          light = new THREE.PointLight(0xffffff, 5, 0, 2);
+          light.position.set(5, 8, 5);
+          state = {
+            color: "#ffffff",
+            intensity: 5,
+            x: 5,
+            y: 8,
+            z: 5,
+            distance: 0,
+            decay: 2,
+            castShadow: false,
+            showHelper: true,
+          };
+        } else {
+          light = new THREE.SpotLight(0xffffff, 8);
+          light.position.set(0, 12, 5);
+          light.angle = Math.PI / 6;
+          light.penumbra = 0.3;
+          light.distance = 0;
+          light.decay = 2;
+          light.target.position.set(0, 0, 0);
+          scene.add(light.target);
+          state = {
+            color: "#ffffff",
+            intensity: 8,
+            x: 0,
+            y: 12,
+            z: 5,
+            targetX: 0,
+            targetY: 0,
+            targetZ: 0,
+            angle: Math.PI / 6,
+            penumbra: 0.3,
+            distance: 0,
+            decay: 2,
+            castShadow: false,
+            showHelper: true,
+          };
+        }
+
+        configureLightShadow(light);
+        scene.add(light);
+
+        const helper =
+          type === "point" ? createPointLightHelper(light, 0.4) : createSpotLightHelper(light);
+        scene.add(helper);
+
+        const entry = { id: customLightId, type, label, light, helper, state };
+        customLights.push(entry);
+        rebuildCustomLightsPanel();
+      }
+
+      function removeCustomLight(entry) {
+        const idx = customLights.indexOf(entry);
+        if (idx < 0) return;
+
+        scene.remove(entry.light);
+        scene.remove(entry.helper);
+        if (entry.light.target) scene.remove(entry.light.target);
+        entry.helper.dispose?.();
+        customLights.splice(idx, 1);
+        rebuildCustomLightsPanel();
+      }
+
+      function rebuildCustomLightsPanel() {
+        if (!sceneLightFolder) return;
+
+        if (customLightsGuiFolder) {
+          customLightsGuiFolder.destroy();
+          customLightsGuiFolder = null;
+        }
+
+        customLightsGuiFolder = sceneLightFolder.addFolder("自定义光源");
+
+        if (customLights.length === 0) {
+          customLightsGuiFolder.add({ hint: "—" }, "hint").name("（暂无，请上方添加）").disable();
+        }
+
+        for (const entry of customLights) {
+          const folder = customLightsGuiFolder.addFolder(entry.label);
+          const { state, type } = entry;
+
+          folder
+            .addColor(state, "color")
+            .name("颜色")
+            .onChange(() => syncCustomLight(entry));
+          folder
+            .add(state, "intensity", 0, 50, 0.1)
+            .name("强度")
+            .onChange(() => syncCustomLight(entry));
+
+          const posFolder = folder.addFolder("位置");
+          posFolder
+            .add(state, "x", -50, 50, 0.1)
+            .name("X")
+            .onChange(() => syncCustomLight(entry));
+          posFolder
+            .add(state, "y", 0, 50, 0.1)
+            .name("Y")
+            .onChange(() => syncCustomLight(entry));
+          posFolder
+            .add(state, "z", -50, 50, 0.1)
+            .name("Z")
+            .onChange(() => syncCustomLight(entry));
+
+          folder
+            .add(state, "distance", 0, 100, 0.5)
+            .name("照射距离")
+            .onChange(() => syncCustomLight(entry));
+          folder
+            .add(state, "decay", 0, 4, 0.01)
+            .name("衰减")
+            .onChange(() => syncCustomLight(entry));
+          folder
+            .add(state, "castShadow")
+            .name("投射阴影")
+            .onChange(() => syncCustomLight(entry));
+          folder
+            .add(state, "showHelper")
+            .name("显示辅助线")
+            .onChange(() => syncCustomLight(entry));
+
+          if (type === "spot") {
+            const targetFolder = folder.addFolder("照射目标");
+            targetFolder
+              .add(state, "targetX", -50, 50, 0.1)
+              .name("X")
+              .onChange(() => syncCustomLight(entry));
+            targetFolder
+              .add(state, "targetY", -10, 30, 0.1)
+              .name("Y")
+              .onChange(() => syncCustomLight(entry));
+            targetFolder
+              .add(state, "targetZ", -50, 50, 0.1)
+              .name("Z")
+              .onChange(() => syncCustomLight(entry));
+            folder
+              .add(state, "angle", 0.05, Math.PI / 2, 0.01)
+              .name("锥角 (rad)")
+              .onChange(() => syncCustomLight(entry));
+            folder
+              .add(state, "penumbra", 0, 1, 0.01)
+              .name("边缘柔化")
+              .onChange(() => syncCustomLight(entry));
+          }
+
+          const actions = {
+            remove() {
+              removeCustomLight(entry);
+            },
+          };
+          folder.add(actions, "remove").name("删除此光源");
+        }
+
+        customLightsGuiFolder.open();
+      }
+
+      setupSettingsPanel();
+
+      loadHDREnvironment().catch((err) => {
+        console.warn("HDR 环境贴图加载失败，将仅使用场景灯光:", err);
+      });
+
+      // PBR 材质参数表 — 智能实验室 3D 场景（MeshPhysicalMaterial）
+      const PBR_MATERIAL_CONFIG = {
+        "Material.001": { color: 0x2d2d2d, metalness: 0.0, roughness: 0.36, ior: 1.5, opacity: 1.0 },
+        "材质.015": { color: 0x4465e7, metalness: 0.0, roughness: 0.337, ior: 1.5, opacity: 1.0 },
+        "材质.016": { color: 0x7d7d7d, metalness: 0.993, roughness: 0.351, ior: 1.5, opacity: 1.0 },
+        "材质.009": { color: 0xe7e7e7, metalness: 0.0, roughness: 0.379, ior: 1.5, opacity: 1.0 },
+        "材质.010": { color: 0x757575, metalness: 0.0, roughness: 0.467, ior: 1.5, opacity: 1.0 },
+        "材质.011": { metalness: 0.0, ior: 1.5, opacity: 1.0, preserveFromSource: true },
+        "Material.005": { color: 0xbdbdbd, metalness: 0.0, roughness: 0.195, ior: 1.5, opacity: 1.0 },
+        "材质.008": { color: 0x757ea4, metalness: 0.0, roughness: 0.231, ior: 1.5, opacity: 1.0 },
+        "墙": { color: 0xdcdcdc, metalness: 0.0, roughness: 1.0, ior: 2.9, opacity: 1.0 },
+        "Material.004": { color: 0x2d2d2d, metalness: 0.0, roughness: 0.36, ior: 1.5, opacity: 1.0 },
+        "材质.005": { color: 0x525252, metalness: 0.0, roughness: 1.0, ior: 3.6, opacity: 1.0 },
+        "Material.002": { color: 0xe7e7e7, metalness: 0.0, roughness: 0.296, ior: 1.5, opacity: 1.0 },
+      };
+
+      const PBR_NAME_ALIASES = {
+        "material.001": "Material.001",
+        "material.002": "Material.002",
+        "material.005": "Material.005",
+        "材质.004": "Material.004",
+        "0.16": "材质.016",
+      };
+
+      const materialCache = new Map();
+      const liveMaterials = new Map();
+      const materialEditState = new Map();
+      let materialGui = null;
+      let materialParamFolder = null;
+
+      function colorToHex(color) {
+        return `#${color.getHexString()}`;
+      }
+
+      function hexToColor(hex) {
+        return parseInt(hex.replace("#", ""), 16);
+      }
+
+      function getCanonicalMaterialName(name, mat) {
+        if (name && PBR_NAME_ALIASES[name]) return PBR_NAME_ALIASES[name];
+        if (name && (PBR_MATERIAL_CONFIG[name] || materialEditState.has(name))) return name;
+        return name || mat?.name || mat?.uuid || "未命名材质";
+      }
+
+      function paramsFromMaterial(mat, config) {
+        return {
+          color: config?.color != null ? `#${config.color.toString(16).padStart(6, "0")}` : colorToHex(mat.color),
+          metalness: config?.metalness ?? mat.metalness,
+          roughness: config?.roughness ?? mat.roughness,
+          ior: config?.ior ?? mat.ior ?? 1.5,
+          opacity: config?.opacity ?? mat.opacity,
+          envMapIntensity: mat.envMapIntensity ?? 1,
+        };
+      }
+
+      function registerMaterial(name, mat) {
+        const canonical = getCanonicalMaterialName(name, mat);
+        const config = PBR_MATERIAL_CONFIG[canonical] || resolvePBRConfig(name);
+
+        if (!materialEditState.has(canonical)) {
+          materialEditState.set(canonical, paramsFromMaterial(mat, config));
+        }
+
+        liveMaterials.set(canonical, mat);
+        mat.name = canonical;
+        return canonical;
+      }
+
+      function syncConfigFromParams(canonical) {
+        const p = materialEditState.get(canonical);
+        if (!p) return;
+
+        if (!PBR_MATERIAL_CONFIG[canonical]) {
+          PBR_MATERIAL_CONFIG[canonical] = {};
+        }
+
+        const cfg = PBR_MATERIAL_CONFIG[canonical];
+        cfg.color = hexToColor(p.color);
+        cfg.metalness = p.metalness;
+        cfg.roughness = p.roughness;
+        cfg.ior = p.ior;
+        cfg.opacity = p.opacity;
+      }
+
+      function applyMaterialParams(canonical) {
+        const mat = liveMaterials.get(canonical);
+        const p = materialEditState.get(canonical);
+        if (!mat || !p) return;
+
+        mat.color.set(p.color);
+        mat.metalness = p.metalness;
+        mat.roughness = p.roughness;
+        mat.ior = p.ior;
+        mat.opacity = p.opacity;
+        mat.transparent = p.opacity < 1;
+        mat.envMapIntensity = p.envMapIntensity;
+        mat.needsUpdate = true;
+
+        syncConfigFromParams(canonical);
+      }
+
+      function setupMaterialPanel() {
+        if (materialGui) materialGui.destroy();
+
+        const names = [...liveMaterials.keys()].sort((a, b) => a.localeCompare(b, "zh"));
+
+        if (names.length === 0) return;
+
+        const matPicker = { material: names[0] };
+
+        materialGui = new GUI({ title: "材质 PBR", width: 280 });
+        materialGui.domElement.classList.add("material-gui");
+
+        materialGui
+          .add(matPicker, "material", names)
+          .name("选择材质")
+          .onChange(() => buildMaterialControls());
+
+        function buildMaterialControls() {
+          if (materialParamFolder) materialParamFolder.destroy();
+
+          const canonical = matPicker.material;
+          const p = materialEditState.get(canonical);
+          if (!p) return;
+
+          materialParamFolder = materialGui.addFolder("PBR 参数");
+          materialParamFolder
+            .addColor(p, "color")
+            .name("颜色")
+            .onChange(() => applyMaterialParams(canonical));
+          materialParamFolder
+            .add(p, "metalness", 0, 1, 0.001)
+            .name("金属度")
+            .onChange(() => applyMaterialParams(canonical));
+          materialParamFolder
+            .add(p, "roughness", 0, 1, 0.001)
+            .name("粗糙度")
+            .onChange(() => applyMaterialParams(canonical));
+          materialParamFolder
+            .add(p, "ior", 1, 3, 0.01)
+            .name("折射率 IOR")
+            .onChange(() => applyMaterialParams(canonical));
+          materialParamFolder
+            .add(p, "opacity", 0, 1, 0.01)
+            .name("不透明度")
+            .onChange(() => applyMaterialParams(canonical));
+          materialParamFolder
+            .add(p, "envMapIntensity", 0, 3, 0.01)
+            .name("环境反射")
+            .onChange(() => applyMaterialParams(canonical));
+          materialParamFolder.open();
+        }
+
+        buildMaterialControls();
+        materialGui.open();
+      }
+
+      function resolvePBRConfig(materialName) {
+        if (!materialName) return null;
+        if (PBR_MATERIAL_CONFIG[materialName]) return PBR_MATERIAL_CONFIG[materialName];
+        const alias = PBR_NAME_ALIASES[materialName];
+        return alias ? PBR_MATERIAL_CONFIG[alias] : null;
+      }
+
+      function createPBRMaterial(config, sourceMaterial) {
+        const opacity = config.opacity ?? 1;
+        const preserve = config.preserveFromSource && sourceMaterial;
+
+        const mat = new THREE.MeshPhysicalMaterial({
+          color: config.color ?? 0xffffff,
+          metalness: config.metalness ?? sourceMaterial?.metalness ?? 0,
+          roughness: config.roughness ?? sourceMaterial?.roughness ?? 0.5,
+          ior: config.ior ?? 1.5,
+          opacity,
+          transparent: opacity < 1,
+        });
+
+        if (preserve) {
+          mat.color.copy(sourceMaterial.color);
+          mat.roughness = sourceMaterial.roughness ?? mat.roughness;
+        }
+
+        if (sourceMaterial) {
+          ["map", "normalMap", "roughnessMap", "metalnessMap", "aoMap", "emissiveMap"].forEach((key) => {
+            if (sourceMaterial[key]) {
+              mat[key] = sourceMaterial[key];
+              if (key === "map" || key === "emissiveMap") {
+                mat[key].colorSpace = THREE.SRGBColorSpace;
+              }
+            }
+          });
+          if (sourceMaterial.emissive) mat.emissive.copy(sourceMaterial.emissive);
+        }
+
+        return mat;
+      }
+
+      function upgradeMaterial(sourceMaterial) {
+        if (!sourceMaterial) {
+          return new THREE.MeshPhysicalMaterial({
+            color: 0xcccccc,
+            metalness: 0,
+            roughness: 0.5,
+          });
+        }
+
+        if (sourceMaterial.isMeshPhysicalMaterial) return sourceMaterial;
+
+        const mat = new THREE.MeshPhysicalMaterial({
+          color: sourceMaterial.color,
+          metalness: sourceMaterial.metalness ?? 0,
+          roughness: sourceMaterial.roughness ?? 0.5,
+          metalnessMap: sourceMaterial.metalnessMap,
+          roughnessMap: sourceMaterial.roughnessMap,
+          normalMap: sourceMaterial.normalMap,
+          map: sourceMaterial.map,
+          aoMap: sourceMaterial.aoMap,
+          emissive: sourceMaterial.emissive,
+          emissiveMap: sourceMaterial.emissiveMap,
+          opacity: sourceMaterial.opacity ?? 1,
+          transparent: sourceMaterial.transparent,
+          ior: sourceMaterial.ior ?? 1.5,
+        });
+        if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace;
+        if (mat.emissiveMap) mat.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+        return mat;
+      }
+
+      function getMaterialByName(name, sourceMaterial) {
+        const config = resolvePBRConfig(name);
+        const cacheKey = config ? `cfg:${PBR_NAME_ALIASES[name] || name}` : `src:${name || sourceMaterial?.uuid}`;
+
+        if (materialCache.has(cacheKey)) return materialCache.get(cacheKey);
+
+        const mat = config
+          ? createPBRMaterial(config, sourceMaterial)
+          : upgradeMaterial(sourceMaterial);
+
+        if (name) mat.name = PBR_NAME_ALIASES[name] || name;
+        materialCache.set(cacheKey, mat);
+        return mat;
+      }
+
+      function applyPBRMaterials(model) {
+        const unconfigured = new Set();
+
+        model.traverse((child) => {
+          if (!child.isMesh) return;
+
+          const applyOne = (mat) => {
+            const name = mat?.name || "";
+            if (name && !resolvePBRConfig(name)) unconfigured.add(name);
+            const next = getMaterialByName(name, mat);
+            registerMaterial(name, next);
+            if (mat && mat !== next && typeof mat.dispose === "function") mat.dispose();
+            return next;
+          };
+
+          if (Array.isArray(child.material)) {
+            child.material = child.material.map(applyOne);
+          } else {
+            child.material = applyOne(child.material);
+          }
+        });
+
+        if (unconfigured.size > 0) {
+          console.info("以下材质未在 PBR 参数表中，已保留模型原参数:", [...unconfigured]);
+        }
+
+        setupMaterialPanel();
+      }
+
+      function frameCameraToModel(model) {
+        const box = new THREE.Box3().setFromObject(model);
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z, 0.1);
+        const dist = maxDim * 1.6;
+
+        camera.position.set(dist * 0.65, dist * 0.4, dist * 0.85);
+        controls.target.set(0, size.y * 0.15, 0);
+        controls.update();
+      }
+
+      function fitCameraToModel(model, { usePresetCamera = false } = {}) {
+        const box = new THREE.Box3().setFromObject(model);
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+
+        model.position.sub(center);
+
+        const maxDim = Math.max(size.x, size.y, size.z, 0.1);
+
+        controls.maxDistance = maxDim * 4;
+        controls.minDistance = maxDim * 0.02;
+        camera.near = Math.max(maxDim / 2000, 0.01);
+        camera.far = maxDim * 30;
+        camera.updateProjectionMatrix();
+
+        grid.position.y = box.min.y - center.y;
+        grid.scale.setScalar(Math.max(maxDim / 10, 1));
+
+        if (usePresetCamera) {
+          applyInitialCamera();
+        } else {
+          frameCameraToModel(model);
+        }
+      }
+
+      function disposeObject3D(root) {
+        root.traverse((obj) => {
+          if (obj.geometry) obj.geometry.dispose();
+          const materials = obj.material
+            ? Array.isArray(obj.material)
+              ? obj.material
+              : [obj.material]
+            : [];
+          for (const mat of materials) {
+            if (!mat) continue;
+            for (const key of Object.keys(mat)) {
+              const value = mat[key];
+              if (value?.isTexture) value.dispose();
+            }
+            mat.dispose?.();
+          }
+        });
+      }
+
+      function clearMaterialState() {
+        materialCache.clear();
+        liveMaterials.clear();
+        materialEditState.clear();
+      }
+
+      function showModelLoading(message) {
+        loadingMessageEl.textContent = message;
+        progressSpan.style.width = "0%";
+        loadingEl.classList.remove("hidden");
+      }
+
+      function hideModelLoading() {
+        loadingEl.classList.add("hidden");
+        progressSpan.style.width = "0%";
+      }
+
+      function showModelLoadError(message) {
+        loadingMessageEl.textContent = message;
+        progressSpan.style.width = "0%";
+        loadingEl.classList.remove("hidden");
+      }
+
+      function updateModelNameDisplay(name) {
+        if (window.__updateModelNameDisplay) window.__updateModelNameDisplay(name);
+      }
+
+      function installModel(gltf, { name, usePresetCamera = false } = {}) {
+        if (currentModel) {
+          scene.remove(currentModel);
+          disposeObject3D(currentModel);
+          currentModel = null;
+        }
+        clearMaterialState();
+
+        const model = gltf.scene;
+        model.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+          }
+        });
+
+        applyPBRMaterials(model);
+        scene.add(model);
+        currentModel = model;
+        fitCameraToModel(model, { usePresetCamera });
+
+        if (name) {
+          currentModelName = name;
+          updateModelNameDisplay(name);
+        }
+
+        hideModelLoading();
+      }
+
+      function loadModelFromFile(file) {
+        if (!file) return;
+        if (!/\.(glb|gltf)$/i.test(file.name)) {
+          alert("请选择 .glb 或 .gltf 文件");
+          return;
+        }
+
+        showModelLoading(`正在加载 ${file.name}…`);
+
+        const reader = new FileReader();
+        reader.onload = () => {
+          loader.parse(
+            reader.result,
+            "",
+            (gltf) => installModel(gltf, { name: file.name, usePresetCamera: false }),
+            (error) => {
+              console.error("模型解析失败:", error);
+              showModelLoadError("模型解析失败，请确认文件格式正确");
+            }
+          );
+        };
+        reader.onerror = () => {
+          console.error("文件读取失败");
+          showModelLoadError("文件读取失败");
+        };
+        reader.readAsArrayBuffer(file);
+      }
+
+      modelFileInput.addEventListener("change", (event) => {
+        const file = event.target.files?.[0];
+        if (file) loadModelFromFile(file);
+        modelFileInput.value = "";
+      });
+
+      const loader = new GLTFLoader();
+      showModelLoading("正在加载实验教室模型…");
+      loader.load(
+        MODEL_PATH,
+        (gltf) => installModel(gltf, { name: "实验教室(2).glb", usePresetCamera: true }),
+        (progress) => {
+          if (progress.total > 0) {
+            const percent = (progress.loaded / progress.total) * 100;
+            progressSpan.style.width = `${percent}%`;
+          }
+        },
+        (error) => {
+          console.error("模型加载失败:", error);
+          showModelLoadError("模型加载失败，请确认已用本地服务器打开页面");
+        }
+      );
+
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        for (const entry of customLights) {
+          if (entry.helper?.visible) entry.helper.update();
+        }
+        renderer.render(scene, camera);
+      }
+
+      animate();
+    </script>
+  </body>
+</html>
