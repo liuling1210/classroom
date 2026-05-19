@@ -107,7 +107,7 @@
       import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
       import GUI from "three/addons/libs/lil-gui.module.min.js";
 
-      const MODEL_PATH = "./model/实验教室(2).glb";
+      const MODEL_PATH = "./model/school.glb";
       const HDR_PATH = "./hdr/studio_small_08_1k.hdr";
 
       const INITIAL_CAMERA = {
@@ -122,22 +122,24 @@
       const modelFileInput = document.querySelector("#modelFileInput");
 
       let currentModel = null;
-      let currentModelName = "实验教室(2).glb";
+      let currentModelName = "school.glb";
 
+      const maxPixelRatio = 2;
       const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxPixelRatio));
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.physicallyCorrectLights = true;
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-      renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.5;
+      renderer.toneMapping = THREE.LinearToneMapping;
+      renderer.toneMappingExposure = 0.55;
 
       const scene = new THREE.Scene();
-      const fallbackBgColor = new THREE.Color(0xb8c4d0);
+      const fallbackBgColor = new THREE.Color(0x070808);
       scene.background = fallbackBgColor.clone();
-      scene.environmentIntensity = 1.0;
+      scene.environmentIntensity = 0;
+      scene.environment = null;
 
       let hdrEnvMap = null;
 
@@ -152,7 +154,7 @@
               hdrTexture.mapping = THREE.EquirectangularReflectionMapping;
               const envMap = pmremGenerator.fromEquirectangular(hdrTexture).texture;
               hdrEnvMap = envMap;
-              scene.environment = envMap;
+              scene.environment = settings.useEnvironment ? envMap : null;
               applyBackground();
               hdrTexture.dispose();
               pmremGenerator.dispose();
@@ -190,16 +192,19 @@
 
       applyInitialCamera();
 
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.15);
+      const ambientLight = new THREE.AmbientLight(0xffffff, 1.72);
       scene.add(ambientLight);
 
-      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x8d99ae, 0.25);
+      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x3a78e4, 1.3);
       scene.add(hemiLight);
 
-      const dirLight = new THREE.DirectionalLight(0xffffff, 2.5);
-      dirLight.position.set(10, 20, 10);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 3);
+      dirLight.position.set(3, 14.5, -4);
       dirLight.castShadow = true;
       dirLight.shadow.mapSize.set(2048, 2048);
+      dirLight.shadow.bias = -0.00015;
+      dirLight.shadow.normalBias = 0.04;
+      dirLight.shadow.radius = 2;
       dirLight.shadow.camera.near = 0.5;
       dirLight.shadow.camera.far = 80;
       dirLight.shadow.camera.left = -30;
@@ -207,12 +212,52 @@
       dirLight.shadow.camera.top = 30;
       dirLight.shadow.camera.bottom = -30;
       scene.add(dirLight);
+      scene.add(dirLight.target);
 
-      const grid = new THREE.GridHelper(40, 40, 0x888888, 0xcccccc);
+      const grid = new THREE.GridHelper(20, 20, 0x888888, 0xcccccc);
       grid.position.y = 0;
+      grid.renderOrder = 1;
+      grid.traverse((obj) => {
+        if (!obj.material) return;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const mat of mats) {
+          mat.transparent = true;
+          mat.opacity = 0.35;
+          mat.depthWrite = false;
+          mat.polygonOffset = true;
+          mat.polygonOffsetFactor = 1;
+          mat.polygonOffsetUnits = 1;
+        }
+      });
       scene.add(grid);
+      grid.visible = true;
 
       let customLightId = 0;
+
+      const DEFAULT_POINT_LIGHTS = [
+        {
+          color: "#ffffff",
+          intensity: 1.5,
+          x: -9.6,
+          y: 0,
+          z: 18.1,
+          distance: 0,
+          decay: 1.29,
+          castShadow: false,
+          showHelper: true,
+        },
+        {
+          color: "#ffffff",
+          intensity: 5,
+          x: -8.5,
+          y: 1.6,
+          z: 12.3,
+          distance: 0,
+          decay: 2,
+          castShadow: false,
+          showHelper: true,
+        },
+      ];
       const customLights = [];
       let customLightsGuiFolder = null;
       let sceneLightFolder = null;
@@ -226,25 +271,49 @@
       };
 
       const settings = {
-        exposure: renderer.toneMappingExposure,
-        toneMapping: "ACES",
-        physicallyCorrectLights: renderer.physicallyCorrectLights,
-        shadows: renderer.shadowMap.enabled,
+        exposure: 0.55,
+        toneMapping: "Linear",
+        physicallyCorrectLights: true,
+        shadows: true,
         hdrBackground: true,
-        useEnvironment: true,
-        environmentIntensity: scene.environmentIntensity,
-        backgroundColor: "#b8c4d0",
-        ambientIntensity: ambientLight.intensity,
-        hemiIntensity: hemiLight.intensity,
-        hemiGroundColor: "#8d99ae",
-        dirIntensity: dirLight.intensity,
-        dirX: dirLight.position.x,
-        dirY: dirLight.position.y,
-        dirZ: dirLight.position.z,
-        dirCastShadow: dirLight.castShadow,
+        useEnvironment: false,
+        environmentIntensity: 0,
+        backgroundColor: "#070808",
+        ambientIntensity: 1.72,
+        hemiIntensity: 1.3,
+        hemiGroundColor: "#3a78e4",
+        dirIntensity: 3,
+        dirX: 3,
+        dirY: 14.5,
+        dirZ: -4,
+        dirCastShadow: true,
         showGrid: true,
-        cameraFov: camera.fov,
+        cameraFov: 50,
       };
+
+      function applySceneSettings() {
+        renderer.toneMappingExposure = settings.exposure;
+        renderer.toneMapping = TONE_MAPPING_OPTIONS[settings.toneMapping];
+        renderer.physicallyCorrectLights = settings.physicallyCorrectLights;
+        renderer.shadowMap.enabled = settings.shadows;
+
+        scene.environmentIntensity = settings.environmentIntensity;
+        scene.environment = settings.useEnvironment && hdrEnvMap ? hdrEnvMap : null;
+
+        fallbackBgColor.set(settings.backgroundColor);
+        applyBackground();
+
+        ambientLight.intensity = settings.ambientIntensity;
+        hemiLight.intensity = settings.hemiIntensity;
+        hemiLight.groundColor.set(settings.hemiGroundColor);
+        dirLight.intensity = settings.dirIntensity;
+        updateDirLightPosition();
+        dirLight.castShadow = settings.dirCastShadow;
+
+        grid.visible = settings.showGrid;
+        camera.fov = settings.cameraFov;
+        camera.updateProjectionMatrix();
+      }
 
       function applyBackground() {
         if (settings.hdrBackground && hdrEnvMap) {
@@ -326,13 +395,13 @@
         lightFolder.add(lightActions, "addLight").name("添加光源");
 
         lightFolder
-          .add(settings, "ambientIntensity", 0, 2, 0.01)
+          .add(settings, "ambientIntensity", 0, 5, 0.01)
           .name("环境光")
           .onChange((v) => {
             ambientLight.intensity = v;
           });
         lightFolder
-          .add(settings, "hemiIntensity", 0, 2, 0.01)
+          .add(settings, "hemiIntensity", 0, 5, 0.01)
           .name("半球光")
           .onChange((v) => {
             hemiLight.intensity = v;
@@ -401,11 +470,58 @@
 
       function configureLightShadow(light) {
         light.shadow.mapSize.set(1024, 1024);
-        light.shadow.bias = -0.0005;
+        light.shadow.bias = -0.00015;
+        light.shadow.normalBias = 0.04;
+        light.shadow.radius = 2;
         if (light.shadow.camera) {
           light.shadow.camera.near = 0.5;
           light.shadow.camera.far = 50;
         }
+      }
+
+      const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+
+      function optimizeTexture(texture) {
+        if (!texture?.isTexture) return;
+        texture.anisotropy = maxAnisotropy;
+        texture.minFilter = THREE.LinearMipmapLinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.generateMipmaps = true;
+      }
+
+      function optimizeMaterialTextures(material) {
+        if (!material) return;
+        for (const key of Object.keys(material)) {
+          const value = material[key];
+          if (value?.isTexture) optimizeTexture(value);
+        }
+      }
+
+      function optimizeObjectTextures(root) {
+        root.traverse((obj) => {
+          if (!obj.material) return;
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          mats.forEach(optimizeMaterialTextures);
+        });
+      }
+
+      function fitDirectionalLightShadow(model) {
+        const box = new THREE.Box3().setFromObject(model);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const half = Math.max(size.x, size.z, 1) * 0.55;
+
+        const cam = dirLight.shadow.camera;
+        cam.left = -half;
+        cam.right = half;
+        cam.top = half;
+        cam.bottom = -half;
+        cam.near = 0.5;
+        cam.far = Math.max(size.y * 2.5, 10);
+        cam.updateProjectionMatrix();
+
+        dirLight.target.position.copy(center);
+        dirLight.target.updateMatrixWorld();
       }
 
       function createPointLightHelper(light, size = 0.4) {
@@ -497,7 +613,7 @@
         }
       }
 
-      function addCustomLight(type) {
+      function addCustomLight(type, preset = null) {
         customLightId += 1;
         const label = type === "point" ? `点光源 ${customLightId}` : `聚光灯 ${customLightId}`;
 
@@ -505,8 +621,6 @@
         let state;
 
         if (type === "point") {
-          light = new THREE.PointLight(0xffffff, 5, 0, 2);
-          light.position.set(5, 8, 5);
           state = {
             color: "#ffffff",
             intensity: 5,
@@ -517,16 +631,10 @@
             decay: 2,
             castShadow: false,
             showHelper: true,
+            ...preset,
           };
+          light = new THREE.PointLight(0xffffff, state.intensity, state.distance, state.decay);
         } else {
-          light = new THREE.SpotLight(0xffffff, 8);
-          light.position.set(0, 12, 5);
-          light.angle = Math.PI / 6;
-          light.penumbra = 0.3;
-          light.distance = 0;
-          light.decay = 2;
-          light.target.position.set(0, 0, 0);
-          scene.add(light.target);
           state = {
             color: "#ffffff",
             intensity: 8,
@@ -542,7 +650,15 @@
             decay: 2,
             castShadow: false,
             showHelper: true,
+            ...preset,
           };
+          light = new THREE.SpotLight(0xffffff, state.intensity);
+          light.angle = state.angle;
+          light.penumbra = state.penumbra;
+          light.distance = state.distance;
+          light.decay = state.decay;
+          light.target.position.set(state.targetX, state.targetY, state.targetZ);
+          scene.add(light.target);
         }
 
         configureLightShadow(light);
@@ -554,6 +670,7 @@
 
         const entry = { id: customLightId, type, label, light, helper, state };
         customLights.push(entry);
+        syncCustomLight(entry);
         rebuildCustomLightsPanel();
       }
 
@@ -663,13 +780,19 @@
       }
 
       setupSettingsPanel();
+      DEFAULT_POINT_LIGHTS.forEach((preset) => addCustomLight("point", preset));
+      applySceneSettings();
 
       loadHDREnvironment().catch((err) => {
         console.warn("HDR 环境贴图加载失败，将仅使用场景灯光:", err);
       });
 
-      // PBR 材质参数表 — 智能实验室 3D 场景（MeshPhysicalMaterial）
+      // PBR 材质参数表（MeshPhysicalMaterial）
       const PBR_MATERIAL_CONFIG = {
+        "white wall": { color: 0xfff0f0, metalness: 0.0, roughness: 1.0, ior: 1.519999, opacity: 1.0 },
+        "blue wall": { color: 0x8299f2, metalness: 0.0, roughness: 0.493, ior: 1.519999, opacity: 1.0 },
+        fume_stand_003: { color: 0x595959, metalness: 0.612, roughness: 0.324, ior: 1.5, opacity: 1.0 },
+        "table blue": { color: 0x9aa2fe, metalness: 0.294, roughness: 0.483, ior: 1.5, opacity: 1.0 },
         "Material.001": { color: 0x2d2d2d, metalness: 0.0, roughness: 0.36, ior: 1.5, opacity: 1.0 },
         "材质.015": { color: 0x4465e7, metalness: 0.0, roughness: 0.337, ior: 1.5, opacity: 1.0 },
         "材质.016": { color: 0x7d7d7d, metalness: 0.993, roughness: 0.351, ior: 1.5, opacity: 1.0 },
@@ -690,6 +813,13 @@
         "material.005": "Material.005",
         "材质.004": "Material.004",
         "0.16": "材质.016",
+        white_wall: "white wall",
+        "White wall": "white wall",
+        blue_wall: "blue wall",
+        "Blue wall": "blue wall",
+        "Fume_stand_003": "fume_stand_003",
+        table_blue: "table blue",
+        "Table blue": "table blue",
       };
 
       const materialCache = new Map();
@@ -850,13 +980,15 @@
           mat.roughness = sourceMaterial.roughness ?? mat.roughness;
         }
 
-        if (sourceMaterial) {
+        const copyMaps = config.preserveFromSource || config.useSourceMaps;
+        if (copyMaps && sourceMaterial) {
           ["map", "normalMap", "roughnessMap", "metalnessMap", "aoMap", "emissiveMap"].forEach((key) => {
             if (sourceMaterial[key]) {
               mat[key] = sourceMaterial[key];
               if (key === "map" || key === "emissiveMap") {
                 mat[key].colorSpace = THREE.SRGBColorSpace;
               }
+              optimizeTexture(mat[key]);
             }
           });
           if (sourceMaterial.emissive) mat.emissive.copy(sourceMaterial.emissive);
@@ -893,6 +1025,7 @@
         });
         if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace;
         if (mat.emissiveMap) mat.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+        optimizeMaterialTextures(mat);
         return mat;
       }
 
@@ -937,6 +1070,7 @@
           console.info("以下材质未在 PBR 参数表中，已保留模型原参数:", [...unconfigured]);
         }
 
+        optimizeObjectTextures(model);
         setupMaterialPanel();
       }
 
@@ -966,8 +1100,10 @@
         camera.far = maxDim * 30;
         camera.updateProjectionMatrix();
 
-        grid.position.y = box.min.y - center.y;
+        const floorY = box.min.y - center.y;
+        grid.position.y = floorY - maxDim * 0.002;
         grid.scale.setScalar(Math.max(maxDim / 10, 1));
+        fitDirectionalLightShadow(model);
 
         if (usePresetCamera) {
           applyInitialCamera();
@@ -1089,7 +1225,7 @@
       showModelLoading("正在加载实验教室模型…");
       loader.load(
         MODEL_PATH,
-        (gltf) => installModel(gltf, { name: "实验教室(2).glb", usePresetCamera: true }),
+        (gltf) => installModel(gltf, { name: "school.glb", usePresetCamera: true }),
         (progress) => {
           if (progress.total > 0) {
             const percent = (progress.loaded / progress.total) * 100;
@@ -1105,6 +1241,7 @@
       window.addEventListener("resize", () => {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxPixelRatio));
         renderer.setSize(window.innerWidth, window.innerHeight);
       });
 
