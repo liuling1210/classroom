@@ -365,7 +365,7 @@
           distance: 47.5,
           decay: 1.74,
           castShadow: true,
-          showHelper: false,
+          showHelper: true,
         },
         {
           color: "#ffffff",
@@ -376,7 +376,7 @@
           distance: 0,
           decay: 2,
           castShadow: false,
-          showHelper: false,
+          showHelper: true,
         },
       ];
       const customLights = [];
@@ -404,6 +404,7 @@
         hemiIntensity: 1.83,
         hemiGroundColor: "#8860d2",
         dirIntensity: 5.6,
+        dirColor: "#ffffff",
         dirX: 41.5,
         dirY: 16,
         dirZ: 14.5,
@@ -428,6 +429,7 @@
         hemiLight.intensity = settings.hemiIntensity;
         hemiLight.groundColor.set(settings.hemiGroundColor);
         dirLight.intensity = settings.dirIntensity;
+        dirLight.color.set(settings.dirColor);
         updateDirLightPosition();
         dirLight.castShadow = settings.dirCastShadow;
 
@@ -548,10 +550,13 @@
         });
         lightFolder
           .add(settings, "dirIntensity", 0, 10, 0.05)
-          .name("平行光")
+          .name("平行光强度")
           .onChange((v) => {
             dirLight.intensity = v;
           });
+        lightFolder.addColor(settings, "dirColor").name("平行光颜色").onChange((v) => {
+          dirLight.color.set(v);
+        });
         const dirPos = lightFolder.addFolder("平行光位置");
         dirPos.add(settings, "dirX", -50, 50, 0.5).name("X").onChange(updateDirLightPosition);
         dirPos.add(settings, "dirY", 0, 50, 0.5).name("Y").onChange(updateDirLightPosition);
@@ -726,7 +731,7 @@
             distance: 0,
             decay: 2,
             castShadow: false,
-            showHelper: false,
+            showHelper: true,
             ...preset,
           };
           light = new THREE.PointLight(0xffffff, state.intensity, state.distance, state.decay);
