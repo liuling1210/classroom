@@ -235,13 +235,13 @@
         printCameraParams();
       });
 
-      const ambientLight = new THREE.AmbientLight(0xffffff, 1.97);
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.82);
       scene.add(ambientLight);
 
-      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x8860d2, 1.83);
+      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x706c66, 1.14);
       scene.add(hemiLight);
 
-      const dirLight = new THREE.DirectionalLight(0xffffff, 5.6);
+      const dirLight = new THREE.DirectionalLight(0xfbf4ef, 4.95);
       dirLight.position.set(41.5, 16, 14.5);
       dirLight.castShadow = true;
       scene.add(dirLight.target);
@@ -359,13 +359,13 @@
         {
           color: "#ffffff",
           intensity: 0.1,
-          x: 0,
+          x: -0.7,
           y: 0.5,
           z: 0,
           distance: 47.5,
           decay: 1.74,
-          castShadow: true,
-          showHelper: true,
+          castShadow: false,
+          showHelper: false,
         },
         {
           color: "#ffffff",
@@ -396,16 +396,16 @@
         toneMapping: "Reinhard",
         physicallyCorrectLights: true,
         shadows: true,
-        hdrBackground: false,
+        hdrBackground: true,
         useGradientBackground: true,
         useEnvironment: false,
         environmentIntensity: 0,
-        backgroundColor: "#e7e8ea",
-        ambientIntensity: 1.97,
-        hemiIntensity: 1.83,
-        hemiGroundColor: "#8860d2",
-        dirIntensity: 5.6,
-        dirColor: "#ffffff",
+        backgroundColor: "#858585",
+        ambientIntensity: 0.82,
+        hemiIntensity: 1.14,
+        hemiGroundColor: "#706c66",
+        dirIntensity: 4.95,
+        dirColor: "#fbf4ef",
         dirX: 41.5,
         dirY: 16,
         dirZ: 14.5,
@@ -739,7 +739,7 @@
             distance: 0,
             decay: 2,
             castShadow: false,
-            showHelper: true,
+            showHelper: false,
             ...preset,
           };
           light = new THREE.PointLight(0xffffff, state.intensity, state.distance, state.decay);
@@ -917,8 +917,8 @@
         "Material.004": { color: 0x2d2d2d, metalness: 0.0, roughness: 0.36, ior: 1.5, opacity: 1.0 },
         "材质.005": { color: 0x525252, metalness: 0.0, roughness: 1.0, ior: 3.6, opacity: 1.0 },
         "Material.002": { color: 0xe7e7e7, metalness: 0.0, roughness: 0.296, ior: 1.5, opacity: 1.0 },
-        玻璃: { color: 0x66391a, metalness: 0.374, roughness: 0.135, ior: 1.5, opacity: 1.0, envMapIntensity: 1 },
-        metal_001: { color: 0xa8a8a8, metalness: 0.752, roughness: 0.5, ior: 1.5, opacity: 1.0, envMapIntensity: 1 },
+        玻璃: { color: 0xb47850, metalness: 0.374, roughness: 0.135, ior: 1.5, opacity: 1.0, envMapIntensity: 1 },
+        metal_001: { color: 0xa8a8a8, metalness: 0.573, roughness: 0.334, ior: 1.5, opacity: 1.0, envMapIntensity: 1 },
       };
 
       const PBR_NAME_ALIASES = {
@@ -1078,6 +1078,12 @@
         return alias ? PBR_MATERIAL_CONFIG[alias] : null;
       }
 
+      function applyMaterialSide(mat, sourceMaterial) {
+        if (!mat) return;
+        if (sourceMaterial?.side != null) mat.side = sourceMaterial.side;
+        if (mat.side === THREE.DoubleSide) mat.shadowSide = THREE.BackSide;
+      }
+
       function createPBRMaterial(config, sourceMaterial) {
         const opacity = config.opacity ?? 1;
         const preserve = config.preserveFromSource && sourceMaterial;
@@ -1110,6 +1116,7 @@
           if (sourceMaterial.emissive) mat.emissive.copy(sourceMaterial.emissive);
         }
 
+        applyMaterialSide(mat, sourceMaterial);
         return mat;
       }
 
@@ -1141,6 +1148,7 @@
         });
         if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace;
         if (mat.emissiveMap) mat.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+        applyMaterialSide(mat, sourceMaterial);
         return mat;
       }
 
@@ -1288,15 +1296,6 @@
           if (!child.isMesh) return;
           child.castShadow = true;
           child.receiveShadow = true;
-          const materials = Array.isArray(child.material)
-            ? child.material
-            : [child.material];
-          for (const mat of materials) {
-            if (!mat) continue;
-            if (mat.side === THREE.DoubleSide) {
-              mat.shadowSide = THREE.BackSide;
-            }
-          }
         });
 
         applyPBRMaterials(model);
