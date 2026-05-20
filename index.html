@@ -397,6 +397,7 @@
         physicallyCorrectLights: true,
         shadows: true,
         hdrBackground: false,
+        useGradientBackground: true,
         useEnvironment: false,
         environmentIntensity: 0,
         backgroundColor: "#e7e8ea",
@@ -441,8 +442,10 @@
       function applyBackground() {
         if (settings.hdrBackground && hdrEnvMap) {
           scene.background = hdrEnvMap;
-        } else {
+        } else if (settings.useGradientBackground) {
           scene.background = gradientBgTexture;
+        } else {
+          scene.background = fallbackBgColor;
         }
       }
 
@@ -511,9 +514,14 @@
           .name("HDR 作为背景")
           .onChange(() => applyBackground());
         envFolder
+          .add(settings, "useGradientBackground")
+          .name("渐变背景")
+          .onChange(() => applyBackground());
+        envFolder
           .addColor(settings, "backgroundColor")
           .name("纯色背景")
           .onChange((v) => {
+            settings.useGradientBackground = false;
             fallbackBgColor.set(v);
             applyBackground();
           });
