@@ -10,7 +10,7 @@
         height: 100%;
         margin: 0;
         overflow: hidden;
-        background: #e7e8ea;
+        background: #eaedf4;
       }
 
       #viewport {
@@ -74,9 +74,17 @@
         z-index: 20;
       }
 
-      .lil-gui.material-gui {
+      .lil-gui.bake-gui {
         position: fixed;
         top: 12px;
+        left: 12px;
+        max-height: calc(100vh - 24px);
+        overflow-y: auto;
+        z-index: 20;
+      }
+
+      .lil-gui.material-gui {
+        position: fixed;
         left: 12px;
         max-height: calc(100vh - 24px);
         overflow-y: auto;
@@ -87,6 +95,7 @@
   <body>
     <canvas id="viewport"></canvas>
     <input id="modelFileInput" type="file" accept=".glb,.gltf" hidden />
+    <input id="bakeFileInput" type="file" accept=".jpg,.jpeg,.png,.webp" hidden />
     <div id="loading">
       <div id="loadingMessage">正在加载实验教室模型…</div>
       <div id="progressBar"><span></span></div>
@@ -107,7 +116,8 @@
       import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
       import GUI from "three/addons/libs/lil-gui.module.min.js";
 
-      const MODEL_PATH = "./model/smoke_002.glb";
+      const MODEL_PATH = "./model/smoke_001.glb";
+      const BAKE_LIGHTMAP_PATH = "./img/img_001.jpg";
       const HDR_PATH = "./hdr/studio_small_08_1k.hdr";
 
       const INITIAL_CAMERA = {
@@ -120,9 +130,11 @@
       const loadingMessageEl = document.querySelector("#loadingMessage");
       const progressSpan = document.querySelector("#progressBar span");
       const modelFileInput = document.querySelector("#modelFileInput");
+      const bakeFileInput = document.querySelector("#bakeFileInput");
 
       let currentModel = null;
-      let currentModelName = "smoke_002.glb";
+      let currentModelName = "smoke_001.glb";
+      let currentBakeTextureName = "img_001.jpg";
 
       const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
       renderer.setPixelRatio(window.devicePixelRatio);
@@ -136,19 +148,23 @@
       renderer.toneMappingExposure = 0.95;
 
       const scene = new THREE.Scene();
-      const fallbackBgColor = new THREE.Color(0xe7e8ea);
+      const fallbackBgColor = new THREE.Color(0xeaedf4);
       scene.environmentIntensity = 0;
       scene.environment = null;
 
-      function createGradientBackgroundTexture() {
+      /** 影棚背景：中心亮、边缘略深略冷的径向渐晕 */
+      function createStudioBackgroundTexture() {
         const canvas = document.createElement("canvas");
-        canvas.width = 2;
+        canvas.width = 512;
         canvas.height = 512;
         const ctx = canvas.getContext("2d");
-        const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-        gradient.addColorStop(0, "rgb(231, 232, 234)");
-        gradient.addColorStop(0.5, "rgb(205, 209, 218)");
-        gradient.addColorStop(1, "rgb(231, 232, 234)");
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2;
+        const radius = Math.max(cx, cy);
+        const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+        gradient.addColorStop(0, "rgb(234, 237, 244)");
+        gradient.addColorStop(0.55, "rgb(234, 237, 244)");
+        gradient.addColorStop(1, "rgb(218, 222, 230)");
         ctx.fillStyle = gradient;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         const texture = new THREE.CanvasTexture(canvas);
@@ -156,10 +172,228 @@
         return texture;
       }
 
-      const gradientBgTexture = createGradientBackgroundTexture();
+      const gradientBgTexture = createStudioBackgroundTexture();
       scene.background = gradientBgTexture;
 
+      const studioFloor = new THREE.Mesh(
+        new THREE.PlaneGeometry(1, 1),
+        new THREE.ShadowMaterial({ opacity: 0.22 })
+      );
+      studioFloor.rotation.x = -Math.PI / 2;
+      studioFloor.receiveShadow = true;
+      scene.add(studioFloor);
+
+      function updateStudioFloor(y, modelSize) {
+        studioFloor.position.y = y;
+        const extent = Math.max(modelSize * 6, 24);
+        studioFloor.scale.set(extent, extent, 1);
+      }
+
       let hdrEnvMap = null;
+      let bakeLightmapTexture = null;
+
+      const BAKE_UV_CHANNEL_OPTIONS = {
+        "UV1 (第一套)": 0,
+        "UV2 (第二套)": 1,
+      };
+
+      const BAKE_OVERLAY_MATERIALS = new Set(["lighting_001"]);
+      const bakeLayerState = new Map();
+      const bakeMaterialState = new Map();
+
+      const bakeSettings = {
+        enabled: true,
+        intensity: 1,
+        aoIntensity: 0,
+        realtimeLightMix: 0.06,
+        envMapScale: 0.15,
+        flipY: false,
+        uvChannelLabel: "UV2 (第二套)",
+        offsetX: 0,
+        offsetY: 0,
+        repeatX: 1,
+        repeatY: 1,
+      };
+
+      const textureLoader = new THREE.TextureLoader();
+
+      function syncBakeTextureSettings() {
+        if (!bakeLightmapTexture) return;
+        bakeLightmapTexture.flipY = bakeSettings.flipY;
+        bakeLightmapTexture.offset.set(bakeSettings.offsetX, bakeSettings.offsetY);
+        bakeLightmapTexture.repeat.set(bakeSettings.repeatX, bakeSettings.repeatY);
+        bakeLightmapTexture.needsUpdate = true;
+      }
+
+      function getBakeRealtimeLightScale() {
+        if (!bakeSettings.enabled || !bakeLightmapTexture) return 1;
+        return bakeSettings.realtimeLightMix;
+      }
+
+      function isBakeActive() {
+        return bakeSettings.enabled && !!bakeLightmapTexture;
+      }
+
+      function applyBakeSceneLighting() {
+        const scale = getBakeRealtimeLightScale();
+        const bakeActive = isBakeActive();
+
+        ambientLight.intensity = settings.ambientIntensity * scale;
+        hemiLight.intensity = settings.hemiIntensity * scale;
+        dirLight.intensity = settings.dirIntensity * scale;
+        dirLight.castShadow = bakeActive ? false : settings.dirCastShadow;
+
+        for (const entry of customLights) {
+          entry.light.intensity = entry.state.intensity * scale;
+          entry.light.castShadow = bakeActive ? false : entry.state.castShadow;
+        }
+
+        scene.environmentIntensity =
+          settings.environmentIntensity * (bakeActive ? bakeSettings.envMapScale : 1);
+      }
+
+      function applyBakeSettings() {
+        syncBakeTextureSettings();
+        applyBakeSceneLighting();
+        if (currentModel) applyBakeLightmap(currentModel);
+      }
+
+      function setBakeLightmapTexture(texture, { name } = {}) {
+        if (bakeLightmapTexture && bakeLightmapTexture !== texture) {
+          bakeLightmapTexture.dispose();
+        }
+        texture.colorSpace = THREE.LinearSRGBColorSpace;
+        bakeLightmapTexture = texture;
+        if (name) {
+          currentBakeTextureName = name;
+          updateBakeTextureNameDisplay(name);
+        }
+        applyBakeSettings();
+      }
+
+      function loadBakeLightmap() {
+        return new Promise((resolve, reject) => {
+          textureLoader.load(
+            BAKE_LIGHTMAP_PATH,
+            (texture) => {
+              setBakeLightmapTexture(texture, { name: "img_001.jpg" });
+              resolve(texture);
+            },
+            undefined,
+            reject
+          );
+        });
+      }
+
+      function loadBakeLightmapFromFile(file) {
+        if (!file) return;
+        if (!/\.(jpg|jpeg|png|webp)$/i.test(file.name)) {
+          alert("请选择 .jpg、.png 或 .webp 格式的烘焙贴图");
+          return;
+        }
+
+        const objectUrl = URL.createObjectURL(file);
+        textureLoader.load(
+          objectUrl,
+          (texture) => {
+            URL.revokeObjectURL(objectUrl);
+            setBakeLightmapTexture(texture, { name: file.name });
+          },
+          undefined,
+          (error) => {
+            URL.revokeObjectURL(objectUrl);
+            console.error("烘焙贴图加载失败:", error);
+            alert("烘焙贴图加载失败，请确认文件格式正确");
+          }
+        );
+      }
+
+      function captureBakeLayerState(mat) {
+        if (bakeLayerState.has(mat.uuid)) return;
+        bakeLayerState.set(mat.uuid, {
+          emissive: mat.emissive.clone(),
+          emissiveIntensity: mat.emissiveIntensity ?? 1,
+          color: mat.color.clone(),
+          map: mat.map,
+          emissiveMap: mat.emissiveMap,
+          opacity: mat.opacity,
+          transparent: mat.transparent,
+          depthWrite: mat.depthWrite,
+        });
+      }
+
+      function hideBakeOverlayMaterial(mat) {
+        captureBakeLayerState(mat);
+        mat.emissive.set(0, 0, 0);
+        mat.emissiveIntensity = 0;
+        mat.emissiveMap = null;
+        mat.opacity = 0;
+        mat.transparent = true;
+        mat.depthWrite = false;
+        mat.needsUpdate = true;
+      }
+
+      function captureBakeMaterialState(mat) {
+        if (bakeMaterialState.has(mat.uuid)) return;
+        bakeMaterialState.set(mat.uuid, {
+          lightMap: mat.lightMap,
+          lightMapIntensity: mat.lightMapIntensity,
+          aoMap: mat.aoMap,
+          aoMapIntensity: mat.aoMapIntensity,
+          envMapIntensity: mat.envMapIntensity ?? 1,
+        });
+      }
+
+      function applyBakeLightmap(root) {
+        if (!root) return;
+
+        const uvChannel = BAKE_UV_CHANNEL_OPTIONS[bakeSettings.uvChannelLabel] ?? 1;
+        const useBake = isBakeActive();
+        const processed = new Set();
+
+        root.traverse((child) => {
+          if (!child.isMesh) return;
+
+          const materials = Array.isArray(child.material) ? child.material : [child.material];
+          for (const mat of materials) {
+            if (!mat || processed.has(mat)) continue;
+            processed.add(mat);
+
+            if (BAKE_OVERLAY_MATERIALS.has(mat.name)) {
+              hideBakeOverlayMaterial(mat);
+              continue;
+            }
+
+            captureBakeMaterialState(mat);
+            const original = bakeMaterialState.get(mat.uuid);
+
+            if (useBake) {
+              mat.lightMap = bakeLightmapTexture;
+              mat.lightMapIntensity = bakeSettings.intensity;
+              mat.lightMap.channel = uvChannel;
+
+              if (bakeSettings.aoIntensity > 0) {
+                mat.aoMap = bakeLightmapTexture;
+                mat.aoMapIntensity = bakeSettings.aoIntensity;
+                mat.aoMap.channel = uvChannel;
+              } else {
+                mat.aoMap = original.aoMap ?? null;
+                mat.aoMapIntensity = original.aoMapIntensity ?? 1;
+              }
+
+              mat.envMapIntensity = original.envMapIntensity * bakeSettings.envMapScale;
+            } else {
+              mat.lightMap = original.lightMap ?? null;
+              mat.lightMapIntensity = original.lightMapIntensity ?? 1;
+              mat.aoMap = original.aoMap ?? null;
+              mat.aoMapIntensity = original.aoMapIntensity ?? 1;
+              mat.envMapIntensity = original.envMapIntensity ?? 1;
+            }
+
+            mat.needsUpdate = true;
+          }
+        });
+      }
 
       const pmremGenerator = new THREE.PMREMGenerator(renderer);
       pmremGenerator.compileEquirectangularShader();
@@ -396,11 +630,11 @@
         toneMapping: "Reinhard",
         physicallyCorrectLights: true,
         shadows: true,
-        hdrBackground: true,
+        hdrBackground: false,
         useGradientBackground: true,
         useEnvironment: false,
         environmentIntensity: 0,
-        backgroundColor: "#858585",
+        backgroundColor: "#eaedf4",
         ambientIntensity: 0.82,
         hemiIntensity: 1.14,
         hemiGroundColor: "#706c66",
@@ -410,7 +644,7 @@
         dirY: 16,
         dirZ: 14.5,
         dirCastShadow: true,
-        showGrid: true,
+        showGrid: false,
         cameraFov: 50,
       };
 
@@ -420,23 +654,20 @@
         renderer.physicallyCorrectLights = settings.physicallyCorrectLights;
         renderer.shadowMap.enabled = settings.shadows;
 
-        scene.environmentIntensity = settings.environmentIntensity;
         scene.environment = settings.useEnvironment && hdrEnvMap ? hdrEnvMap : null;
 
         fallbackBgColor.set(settings.backgroundColor);
         applyBackground();
 
-        ambientLight.intensity = settings.ambientIntensity;
-        hemiLight.intensity = settings.hemiIntensity;
         hemiLight.groundColor.set(settings.hemiGroundColor);
-        dirLight.intensity = settings.dirIntensity;
         dirLight.color.set(settings.dirColor);
         updateDirLightPosition();
-        dirLight.castShadow = settings.dirCastShadow;
 
         grid.visible = settings.showGrid;
         camera.fov = settings.cameraFov;
         camera.updateProjectionMatrix();
+
+        applyBakeSceneLighting();
       }
 
       function applyBackground() {
@@ -450,13 +681,21 @@
       }
 
       let sceneGui = null;
+      let bakeGui = null;
       let materialGui = null;
       let materialParamFolder = null;
       let sidePanelsVisible = true;
 
+      function updateLeftPanelLayout() {
+        if (!materialGui) return;
+        const bakeHeight = bakeGui?.domElement.offsetHeight ?? 0;
+        materialGui.domElement.style.top = `${12 + bakeHeight + (bakeHeight > 0 ? 8 : 0)}px`;
+      }
+
       function setSidePanelsVisible(visible) {
         sidePanelsVisible = visible;
         if (sceneGui) (visible ? sceneGui.show : sceneGui.hide).call(sceneGui);
+        if (bakeGui) (visible ? bakeGui.show : bakeGui.hide).call(bakeGui);
         if (materialGui) (visible ? materialGui.show : materialGui.hide).call(materialGui);
       }
 
@@ -515,7 +754,7 @@
           .onChange(() => applyBackground());
         envFolder
           .add(settings, "useGradientBackground")
-          .name("渐变背景")
+          .name("影棚渐变背景")
           .onChange(() => applyBackground());
         envFolder
           .addColor(settings, "backgroundColor")
@@ -582,8 +821,12 @@
         const sceneFolder = gui.addFolder("场景");
         const modelActions = {
           currentModelName,
+          currentBakeTextureName,
           uploadModel() {
             modelFileInput.click();
+          },
+          uploadBakeTexture() {
+            bakeFileInput.click();
           },
         };
         const modelNameController = sceneFolder
@@ -591,6 +834,15 @@
           .name("当前模型")
           .disable();
         sceneFolder.add(modelActions, "uploadModel").name("上传 GLB 替换");
+        const bakeNameController = sceneFolder
+          .add(modelActions, "currentBakeTextureName")
+          .name("当前烘焙贴图")
+          .disable();
+        sceneFolder.add(modelActions, "uploadBakeTexture").name("上传烘焙贴图替换");
+        sceneFolder
+          .add(bakeSettings, "intensity", 0, 10, 0.05)
+          .name("烘焙强度")
+          .onChange(() => applyBakeSettings());
         sceneFolder
           .add(settings, "showGrid")
           .name("显示网格")
@@ -610,6 +862,12 @@
           currentModelName = name;
           modelActions.currentModelName = name;
           modelNameController.updateDisplay();
+        };
+
+        window.__updateBakeTextureNameDisplay = (name) => {
+          currentBakeTextureName = name;
+          modelActions.currentBakeTextureName = name;
+          bakeNameController.updateDisplay();
         };
 
         setSidePanelsVisible(true);
@@ -708,12 +966,14 @@
 
       function syncCustomLight(entry) {
         const { light, state, type } = entry;
+        const scale = getBakeRealtimeLightScale();
+        const bakeActive = isBakeActive();
         light.color.set(state.color);
-        light.intensity = state.intensity;
+        light.intensity = state.intensity * scale;
         light.position.set(state.x, state.y, state.z);
         light.distance = state.distance;
         light.decay = state.decay;
-        light.castShadow = state.castShadow;
+        light.castShadow = bakeActive ? false : state.castShadow;
         if (entry.helper) entry.helper.visible = state.showHelper;
         if (type === "spot") {
           light.angle = state.angle;
@@ -889,11 +1149,16 @@
       }
 
       setupSettingsPanel();
+      setupBakePanel();
       DEFAULT_POINT_LIGHTS.forEach((preset) => addCustomLight("point", preset));
       applySceneSettings();
 
       loadHDREnvironment().catch((err) => {
         console.warn("HDR 环境贴图加载失败，将仅使用场景灯光:", err);
+      });
+
+      loadBakeLightmap().catch((err) => {
+        console.warn("烘焙光照贴图加载失败:", err);
       });
 
       // PBR 材质参数表（MeshPhysicalMaterial）
@@ -919,6 +1184,7 @@
         "Material.002": { color: 0xe7e7e7, metalness: 0.0, roughness: 0.296, ior: 1.5, opacity: 1.0 },
         玻璃: { color: 0xb47850, metalness: 0.374, roughness: 0.135, ior: 1.5, opacity: 1.0, envMapIntensity: 1 },
         metal_001: { color: 0xa8a8a8, metalness: 0.573, roughness: 0.334, ior: 1.5, opacity: 1.0, envMapIntensity: 1 },
+        shell_001: { color: 0xe7e7e7, metalness: 0, roughness: 0.404, ior: 1.5, opacity: 1.0, envMapIntensity: 1 },
       };
 
       const PBR_NAME_ALIASES = {
@@ -1015,6 +1281,64 @@
         syncConfigFromParams(canonical);
       }
 
+      function setupBakePanel() {
+        if (bakeGui) bakeGui.destroy();
+
+        bakeGui = new GUI({ title: "烘焙贴图", width: 280 });
+        bakeGui.domElement.classList.add("bake-gui");
+
+        bakeGui
+          .add(bakeSettings, "enabled")
+          .name("启用烘焙")
+          .onChange(() => applyBakeSettings());
+        bakeGui
+          .add(bakeSettings, "intensity", 0, 10, 0.05)
+          .name("烘焙强度")
+          .onChange(() => applyBakeSettings());
+        bakeGui
+          .add(bakeSettings, "aoIntensity", 0, 1, 0.01)
+          .name("AO 叠加")
+          .onChange(() => applyBakeSettings());
+        bakeGui
+          .add(bakeSettings, "realtimeLightMix", 0, 1, 0.01)
+          .name("实时光保留")
+          .onChange(() => applyBakeSettings());
+        bakeGui
+          .add(bakeSettings, "envMapScale", 0, 1, 0.01)
+          .name("环境反射保留")
+          .onChange(() => applyBakeSettings());
+        bakeGui
+          .add(bakeSettings, "flipY")
+          .name("翻转 Y")
+          .onChange(() => applyBakeSettings());
+        bakeGui
+          .add(bakeSettings, "uvChannelLabel", Object.keys(BAKE_UV_CHANNEL_OPTIONS))
+          .name("UV 通道")
+          .onChange(() => applyBakeSettings());
+
+        const uvFolder = bakeGui.addFolder("UV 变换");
+        uvFolder
+          .add(bakeSettings, "offsetX", -1, 1, 0.001)
+          .name("偏移 X")
+          .onChange(() => applyBakeSettings());
+        uvFolder
+          .add(bakeSettings, "offsetY", -1, 1, 0.001)
+          .name("偏移 Y")
+          .onChange(() => applyBakeSettings());
+        uvFolder
+          .add(bakeSettings, "repeatX", 0.1, 4, 0.01)
+          .name("缩放 X")
+          .onChange(() => applyBakeSettings());
+        uvFolder
+          .add(bakeSettings, "repeatY", 0.1, 4, 0.01)
+          .name("缩放 Y")
+          .onChange(() => applyBakeSettings());
+        uvFolder.open();
+
+        if (!sidePanelsVisible) bakeGui.hide();
+        requestAnimationFrame(updateLeftPanelLayout);
+      }
+
       function setupMaterialPanel() {
         if (materialGui) materialGui.destroy();
 
@@ -1069,6 +1393,7 @@
 
         buildMaterialControls();
         if (!sidePanelsVisible) materialGui.hide();
+        requestAnimationFrame(updateLeftPanelLayout);
       }
 
       function resolvePBRConfig(materialName) {
@@ -1142,6 +1467,7 @@
           aoMap: sourceMaterial.aoMap,
           emissive: sourceMaterial.emissive,
           emissiveMap: sourceMaterial.emissiveMap,
+          emissiveIntensity: sourceMaterial.emissiveIntensity ?? 1,
           opacity: sourceMaterial.opacity ?? 1,
           transparent: sourceMaterial.transparent,
           ior: sourceMaterial.ior ?? 1.5,
@@ -1225,8 +1551,10 @@
         camera.far = maxDim * 30;
         camera.updateProjectionMatrix();
 
-        grid.position.y = box.min.y - center.y;
+        const floorY = box.min.y - center.y;
+        grid.position.y = floorY;
         grid.scale.setScalar(Math.max(maxDim / 10, 1));
+        updateStudioFloor(floorY, maxDim);
 
         if (usePresetCamera) {
           applyInitialCamera();
@@ -1260,6 +1588,8 @@
         materialCache.clear();
         liveMaterials.clear();
         materialEditState.clear();
+        bakeLayerState.clear();
+        bakeMaterialState.clear();
       }
 
       function showModelLoading(message) {
@@ -1283,6 +1613,10 @@
         if (window.__updateModelNameDisplay) window.__updateModelNameDisplay(name);
       }
 
+      function updateBakeTextureNameDisplay(name) {
+        if (window.__updateBakeTextureNameDisplay) window.__updateBakeTextureNameDisplay(name);
+      }
+
       function installModel(gltf, { name, usePresetCamera = false } = {}) {
         if (currentModel) {
           scene.remove(currentModel);
@@ -1299,6 +1633,7 @@
         });
 
         applyPBRMaterials(model);
+        applyBakeSettings();
         scene.add(model);
         currentModel = model;
         fitCameraToModel(model, { usePresetCamera });
@@ -1345,11 +1680,17 @@
         modelFileInput.value = "";
       });
 
+      bakeFileInput.addEventListener("change", (event) => {
+        const file = event.target.files?.[0];
+        if (file) loadBakeLightmapFromFile(file);
+        bakeFileInput.value = "";
+      });
+
       const loader = new GLTFLoader();
       showModelLoading("正在加载实验教室模型…");
       loader.load(
         MODEL_PATH,
-        (gltf) => installModel(gltf, { name: "smoke_002.glb", usePresetCamera: false }),
+        (gltf) => installModel(gltf, { name: "smoke_001.glb", usePresetCamera: false }),
         (progress) => {
           if (progress.total > 0) {
             const percent = (progress.loaded / progress.total) * 100;
@@ -1367,6 +1708,7 @@
         camera.updateProjectionMatrix();
         renderer.setPixelRatio(window.devicePixelRatio);
         renderer.setSize(window.innerWidth, window.innerHeight);
+        updateLeftPanelLayout();
       });
 
       window.addEventListener("keydown", (e) => {
