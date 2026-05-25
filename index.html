@@ -242,6 +242,7 @@
         hemiLight.intensity = settings.hemiIntensity * scale;
         dirLight.intensity = settings.dirIntensity * scale;
         dirLight.castShadow = bakeActive ? false : settings.dirCastShadow;
+        if (!bakeActive && dirLight.castShadow) resetDirLightShadowFrustum();
 
         for (const entry of customLights) {
           entry.light.intensity = entry.state.intensity * scale;
@@ -482,15 +483,39 @@
       scene.add(dirLight);
 
       const SHADOW_QUALITY = {
-        dirMapSize: 4096,
-        dirBias: -0.00008,
-        dirNormalBias: 0.022,
-        dirRadius: 2,
+        dirMapSize: 8192,
+        dirBias: -0.00015,
+        dirNormalBias: 0.006,
+        dirRadius: 3,
         localMapSize: 2048,
         localBias: -0.0001,
-        localNormalBias: 0.02,
+        localNormalBias: 0.01,
         localRadius: 2,
       };
+
+      /** 薄壁圆管/壳体：用外表面（FrontSide）投阴影，避免 BackSide 导致内外壁深度打架 */
+      const SHADOW_FRONT_SIDE_MATERIALS = new Set([
+        "smoke_tube_001",
+        "shell_001",
+        "shell_002",
+        "metal_001",
+        "metal_002",
+        "tube_red_001",
+        "tube_blue_001",
+        "faceboard_001",
+        "edge_001",
+        "socket_001",
+        "fume_stand_003",
+      ]);
+
+      /** 与主体共面/填缝的 mesh，只接收阴影不投射，减轻接头痤疮 */
+      const SHADOW_CAST_SKIP_MESH_NAMES = new Set([
+        "Plane_001",
+        "Plane_002",
+        "object_001",
+        "object_002",
+        "object_003",
+      ]);
 
       function configureDirectionalShadow(light) {
         const shadow = light.shadow;
@@ -509,6 +534,12 @@
       }
 
       configureDirectionalShadow(dirLight);
+
+      /** 恢复默认大视锥阴影（与仅关烘焙、未拟合时一致） */
+      function resetDirLightShadowFrustum() {
+        configureDirectionalShadow(dirLight);
+        dirLight.shadow.updateMatrices(dirLight);
+      }
 
       const _shadowBox = new THREE.Box3();
       const _shadowSceneSize = new THREE.Vector3();
@@ -570,15 +601,15 @@
         const spanX = Math.max(maxX - minX, 0.1);
         const spanY = Math.max(maxY - minY, 0.1);
         const spanZ = Math.max(maxZ - minZ, 0.1);
-        const padXY = spanX * 0.08;
-        const padZ = spanZ * 0.1;
+        const padXY = spanX * 0.05;
+        const padZ = spanZ * 0.04;
 
         cam.left = minX - padXY;
         cam.right = maxX + padXY;
         cam.bottom = minY - padXY;
         cam.top = maxY + padXY;
-        cam.near = Math.max(-maxZ + padZ, 0.1);
-        cam.far = Math.max(-minZ + padZ, cam.near + 1);
+        cam.near = Math.max(-maxZ + padZ, 0.05);
+        cam.far = Math.max(-minZ + padZ, cam.near + Math.max(spanZ * 0.15, 0.5));
         cam.updateProjectionMatrix();
         dirLight.shadow.updateMatrices(dirLight);
       }
@@ -812,8 +843,12 @@
           .add(settings, "dirCastShadow")
           .name("平行光阴影")
           .onChange((v) => {
+            if (isBakeActive()) {
+              applyBakeSceneLighting();
+              return;
+            }
             dirLight.castShadow = v;
-            if (v) fitDirLightShadowToScene();
+            if (v) resetDirLightShadowFrustum();
           });
         lightFolder.open();
         rebuildCustomLightsPanel();
@@ -875,7 +910,7 @@
 
       function updateDirLightPosition() {
         dirLight.position.set(settings.dirX, settings.dirY, settings.dirZ);
-        fitDirLightShadowToScene();
+        if (dirLight.castShadow) resetDirLightShadowFrustum();
       }
 
       function configureLightShadow(light) {
@@ -1244,6 +1279,7 @@
 
         liveMaterials.set(canonical, mat);
         mat.name = canonical;
+        resolveShadowSide(mat);
         return canonical;
       }
 
@@ -1403,10 +1439,33 @@
         return alias ? PBR_MATERIAL_CONFIG[alias] : null;
       }
 
+      function resolveShadowSide(mat) {
+        if (!mat || mat.side !== THREE.DoubleSide) return;
+        const canonical = getCanonicalMaterialName(mat.name, mat);
+        mat.shadowSide = SHADOW_FRONT_SIDE_MATERIALS.has(canonical)
+          ? THREE.FrontSide
+          : THREE.BackSide;
+      }
+
       function applyMaterialSide(mat, sourceMaterial) {
         if (!mat) return;
         if (sourceMaterial?.side != null) mat.side = sourceMaterial.side;
-        if (mat.side === THREE.DoubleSide) mat.shadowSide = THREE.BackSide;
+        resolveShadowSide(mat);
+      }
+
+      function applyMeshShadowRules(root) {
+        if (!root) return;
+        root.traverse((child) => {
+          if (!child.isMesh) return;
+          const meshName = child.name || "";
+          if (SHADOW_CAST_SKIP_MESH_NAMES.has(meshName)) {
+            child.castShadow = false;
+            child.receiveShadow = true;
+          } else {
+            child.castShadow = true;
+            child.receiveShadow = true;
+          }
+        });
       }
 
       function createPBRMaterial(config, sourceMaterial) {
@@ -1489,8 +1548,19 @@
           : upgradeMaterial(sourceMaterial);
 
         if (name) mat.name = PBR_NAME_ALIASES[name] || name;
+        resolveShadowSide(mat);
         materialCache.set(cacheKey, mat);
         return mat;
+      }
+
+      function syncShadowSides(root) {
+        root.traverse((child) => {
+          if (!child.isMesh) return;
+          const materials = Array.isArray(child.material) ? child.material : [child.material];
+          for (const mat of materials) {
+            if (mat) resolveShadowSide(mat);
+          }
+        });
       }
 
       function applyPBRMaterials(model) {
@@ -1519,6 +1589,7 @@
           console.info("以下材质未在 PBR 参数表中，已保留模型原参数:", [...unconfigured]);
         }
 
+        syncShadowSides(model);
         setupMaterialPanel();
       }
 
@@ -1562,7 +1633,7 @@
           frameCameraToModel(model);
         }
 
-        fitDirLightShadowToScene(model);
+        if (dirLight.castShadow) resetDirLightShadowFrustum();
       }
 
       function disposeObject3D(root) {
@@ -1626,13 +1697,9 @@
         clearMaterialState();
 
         const model = gltf.scene;
-        model.traverse((child) => {
-          if (!child.isMesh) return;
-          child.castShadow = true;
-          child.receiveShadow = true;
-        });
 
         applyPBRMaterials(model);
+        applyMeshShadowRules(model);
         applyBakeSettings();
         scene.add(model);
         currentModel = model;
